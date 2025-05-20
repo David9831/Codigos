@@ -1,8 +1,8 @@
 import torch
 import numpy as np
 import torch.nn.functional as F 
-from IEEE_34_Bus_System import IEEE33BusSystem
-from Actor_Critico_Buffer import Actor, Critic, ReplayBuffer
+from IEEE_34_Bus_System_OLTC import IEEE33BusSystem
+from Actor_Critico_Buffer_OLTC import Actor, Critic, ReplayBuffer
 
 # Hiperparámetros
 STATE_DIM = 3         # Dimensión del estado (ajustar según tu entorno)

@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import pandapower as pp
-from IEEE_34_Bus_System import IEEE33BusSystem
+from IEEE_34_Bus_System_OLTC import IEEE33BusSystem
 env = IEEE33BusSystem
 #Entradas del actor: "state_dim" <----- dimension del estado
 #"hidden_dim" <---- Cantidad de neuronas de la capa profunda 

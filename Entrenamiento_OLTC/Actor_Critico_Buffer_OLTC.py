@@ -45,7 +45,11 @@ class Critic(nn.Module):
         self.fc3 = nn.Linear(hidden_dim, 1)                           # devuelve un unico valor Q(s,a)
     
     def forward(self, state, action):
-        action_embed = self.action_embedding(action.long().squeeze(-1))  # convierte la acción discreta en un vector denso
+        # Asegurar que la acción de entrada al embedding sea (BATCH_SIZE)
+        # action puede ser (B,1,1) o (B,1)
+        # .reshape(-1) lo convertirá a (B)
+        action_indices = action.long().reshape(-1)
+        action_embed = self.action_embedding(action_indices)  # action_embed será (B, hidden_dim)
         # Procesar el estado
         state_out = F.relu(self.fc1(state))                              #Se extraen las caracteristicas en las capas 1 y 2 de la red
         state_out = F.relu(self.fc2(state_out))

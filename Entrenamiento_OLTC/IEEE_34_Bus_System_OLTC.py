@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import torch
 
 class IEEE33BusSystem:
-    def __init__(self):
+    def __init__(self, reward_bus_indices=None):
         self.net = pp.create_empty_network(f_hz=60,sn_mva=1)
         self.base_loads = [
             (0.1, 0.06),
@@ -70,16 +70,25 @@ class IEEE33BusSystem:
             0.36
         ]
         self.perfil_voltaje = []
-        self.setup_network()
-        self.state_dim = self.get_state()
         self.step_count = 0
         self.MAX_STEPS = 24
+        self.reward_bus_indices = reward_bus_indices # Guardar los índices de bus para la recompensa
+        self.setup_network() # Configura la red
+        
+        # Inicializar state_dim correctamente
+        # Primero obtenemos un estado inicial para determinar su longitud (dimensión)
+        # Es importante correr un flujo de potencia aquí para que res_bus esté disponible.
+        try:
+            pp.runpp(self.net) 
+        except Exception as e:
+            print(f"Error inicializando la red durante el primer flujo de potencia: {e}")
+            # Considerar manejar este error de forma más robusta si es necesario
+        initial_state = self._get_raw_state() # Usar un método interno para evitar doble pp.runpp
+        self.state_dim = len(initial_state) 
 
     def is_done(self):
         # Terminar el episodio si se alcanza el límite de pasos
-        if self.step_count == self.MAX_STEPS:
-            return True
-        return False
+        return self.step_count >= self.MAX_STEPS
 
     def setup_network(self):
         # Crear buses
@@ -129,7 +138,7 @@ class IEEE33BusSystem:
             lv_bus=b1, 
             sn_mva=5.5, 
             vn_hv_kv=110, 
-            vn_lv_kv=12.66,
+            vn_lv_kv=12.666,
             pfe_kw=110, 
             i0_percent=0, 
             vk_percent=8, 
@@ -138,14 +147,17 @@ class IEEE33BusSystem:
             tap_neutral=16,
             tap_min=0, 
             tap_max=33, 
-            tap_step_percent=1.25,             #Revisar el porcentaje de carga por paso del transformador (¿¿¿1.25% no es muy poco???)
-            tap_pos=16
+            tap_step_percent=1.25,            
+            tap_pos=16,
+            tap_changer_type = "ratio"
         )
         self.action_dim=33      #Cantidad de taps del transformador 
+                                # Esto implica acciones 0-32. Tap_max es 33. La pos 33 no será alcanzable por el agente.
         # Agregar líneas de distribución
         a=0
         b=1
-        pp.create_line_from_parameters(self.net, from_bus=b0, to_bus=b1, length_km=1, r_ohm_per_km=0.0922,x_ohm_per_km=0.0470, c_nf_per_km=a, max_i_ka=b)
+        # La siguiente línea es incorrecta, ya que b0 y b1 están conectados por el transformador. Se elimina.
+        #pp.create_line_from_parameters(self.net, from_bus=b0, to_bus=b1, length_km=1, r_ohm_per_km=0.0922,x_ohm_per_km=0.0470, c_nf_per_km=a, max_i_ka=b)
         pp.create_line_from_parameters(self.net, from_bus=b1, to_bus=b2, length_km=1, r_ohm_per_km=0.4930,x_ohm_per_km=0.2511, c_nf_per_km=a, max_i_ka=b)
         pp.create_line_from_parameters(self.net, from_bus=b2, to_bus=b3, length_km=1, r_ohm_per_km=0.3660,x_ohm_per_km=0.1864, c_nf_per_km=a, max_i_ka=b)
         pp.create_line_from_parameters(self.net, from_bus=b3, to_bus=b4, length_km=1, r_ohm_per_km=0.3811,x_ohm_per_km=0.1941, c_nf_per_km=a, max_i_ka=b)
@@ -216,61 +228,220 @@ class IEEE33BusSystem:
         pp.create_load(self.net, bus=b32, p_mw=self.base_loads[31][0], q_mvar=self.base_loads[31][1], name="Load 32")
 
     #----------Actualización de las cargas dependiendo de la demanda horaria ----------------------------
-    def update_loads(self,hora):
-        for j in range (hora):                                                        
-            for i, (p_base, q_base) in enumerate(self.base_loads):
-                   self.net.load.at[i, 'p_mw'] = p_base * self.porcentaje_demanda[j]
-                   self.net.load.at[i, 'q_mvar'] = q_base * self.porcentaje_demanda[j]
-        carga_hora=self.net.load
-        return carga_hora
+    def update_loads(self, hora_ciclo): # hora_ciclo se espera que sea de 1 a 24
+        if not (1 <= hora_ciclo <= len(self.porcentaje_demanda)):
+            print(f"Advertencia: hora_ciclo {hora_ciclo} fuera de rango para porcentaje_demanda (1-{len(self.porcentaje_demanda)}). Usando hora 1.")
+            idx_demanda = 0 # Corresponde a self.porcentaje_demanda[0]
+        else:
+            idx_demanda = hora_ciclo - 1 # Convertir 1-24 a 0-23 para indexar
+        
+        current_demand_factor = self.porcentaje_demanda[idx_demanda]
+        for i, (p_base, q_base) in enumerate(self.base_loads):
+               self.net.load.at[i, 'p_mw'] = p_base * current_demand_factor
+               self.net.load.at[i, 'q_mvar'] = q_base * current_demand_factor
+        # La modificación de self.net.load es in-place, no es necesario devolverlo.
         
     #--------- Resetear el sistema de distribucion con las cargas iniciales------------------------------
     def reset(self):
+        # Resetear cargas a sus valores base
         for i, (p_base, q_base) in enumerate(self.base_loads):
             self.net.load.at[i, 'p_mw'] = p_base
             self.net.load.at[i, 'q_mvar'] = q_base
-            carga0=self.net.load
-        return carga0
+        
+        self.step_count = 0 # Resetear el contador de pasos del episodio
+
+        # Opcional: Resetear la posición del tap a neutral si se desea un inicio consistente del tap
+        self.net.trafo.loc[0, 'tap_pos'] = self.net.trafo.tap_neutral.iloc[0]
+
+        # Correr flujo de potencia para tener un estado inicial consistente después del reset
+        try:
+            pp.runpp(self.net)
+        except pp.LoadflowNotConverged:
+            print("Advertencia: Loadflow no convergió durante el reset. El estado puede ser inconsistente.")
+            # Aquí podrías devolver un estado de error o un estado por defecto si es necesario
+        
+        return self.get_state() # Devolver el estado inicial del entorno
     
     #--------- Función de recompensa---------------------------------------------------------------------
     def calculate_reward(self):
-        cv=1
-        alpha=0.1
-        #p_losses=self.net.res_line["p_from_mw"]+self.net.res_line["p_to_mw"]
-        voltajes_nodo=self.net.res_bus.vm_pu.at[1]
-        penalizacion_voltaje=cv*(np.sum(np.where(voltajes_nodo<0.95,voltajes_nodo>1.05,0)))
-        #recompensa=(-(p_losses.sum()+penalizacion_voltaje))
-        recompensa=-(penalizacion_voltaje)
+        cv = 1
+
+        # Asegurarse de que los resultados del flujo de potencia estén disponibles
+        if self.net.res_bus is None or 'vm_pu' not in self.net.res_bus or self.net.res_bus.empty:
+            print("Advertencia: Resultados del flujo de potencia no disponibles en calculate_reward. Devolviendo penalización alta.")
+            return -1000.0 # Devolver una penalización grande
+
+        all_voltages_pu = self.net.res_bus.vm_pu
+
+        if self.reward_bus_indices is not None and isinstance(self.reward_bus_indices, list) and len(self.reward_bus_indices) > 0:
+            # Usar los índices de bus especificados por el usuario
+            # Filtrar para asegurar que los índices sean válidos
+            valid_indices = [idx for idx in self.reward_bus_indices if 0 <= idx < len(all_voltages_pu)]
+            if len(valid_indices) != len(self.reward_bus_indices):
+                print(f"Advertencia: Algunos índices de bus para recompensa eran inválidos. Se usarán solo los válidos: {valid_indices}")
+            
+            if not valid_indices:
+                print("Advertencia: No hay índices de bus válidos especificados para recompensa. Usando todos los buses LV por defecto.")
+                # Fallback al comportamiento por defecto si no quedan índices válidos
+                voltajes_considerados = all_voltages_pu.iloc[1:self.net.bus.shape[0]]
+            else:
+                voltajes_considerados = all_voltages_pu.iloc[valid_indices]
+        else:
+            # Comportamiento por defecto: considerar todos los buses de baja tensión (índices 1 a 33)
+            # Bus 0 es HV. Buses 1 hasta self.net.bus.shape[0]-1 son LV.
+            voltajes_considerados = all_voltages_pu.iloc[1:self.net.bus.shape[0]]
+        
+        penalizacion_voltaje = 0
+        # Penalización por voltajes bajos
+        voltajes_bajos = voltajes_considerados[voltajes_considerados < 0.95]
+        if not voltajes_bajos.empty:
+            penalizacion_voltaje += np.sum(0.95 - voltajes_bajos)
+
+        # Penalización por voltajes altos
+        voltajes_altos = voltajes_considerados[voltajes_considerados > 1.05]
+        if not voltajes_altos.empty:
+            penalizacion_voltaje += np.sum(voltajes_altos - 1.05)
+        
+        penalizacion_voltaje *= cv
+        recompensa = -penalizacion_voltaje
         return recompensa
+
     #----------- Definición de la acción del actor-----------------------------------------------------
     def step(self, action):
+        # Manejar tipo de acción (tensor de PyTorch o entero/flotante)
+        if isinstance(action, torch.Tensor):
+            actual_tap_pos = action.item()
+        elif isinstance(action, (int, float)):
+            actual_tap_pos = int(action)
+        else:
+            raise TypeError(f"Tipo de acción {type(action)} no soportado. Debe ser Tensor, int o float.")
+
+        # Validar que la acción esté dentro de los límites del tap
+        tap_min_val = self.net.trafo.tap_min.iloc[0]
+        tap_max_val = self.net.trafo.tap_max.iloc[0]
+        if not (tap_min_val <= actual_tap_pos <= tap_max_val):
+            print(f"Advertencia: Acción de tap {actual_tap_pos} fuera de rango ({tap_min_val}-{tap_max_val}). Se ajustará.")
+            actual_tap_pos = np.clip(actual_tap_pos, tap_min_val, tap_max_val)
+
         self.step_count += 1 
-        self.net.trafo.tap_pos = action    # si se esta haciendo el cambio del tap en el transformador
+        self.net.trafo.loc[0, 'tap_pos'] = actual_tap_pos
+
+        # --- Información sobre el cambio de Tap y Ratio ---
+        trafo_params = self.net.trafo.iloc[0]
+        vn_hv_kv = trafo_params.vn_hv_kv
+        vn_lv_kv = trafo_params.vn_lv_kv
+        tap_neutral = trafo_params.tap_neutral
+        tap_step_percent = trafo_params.tap_step_percent
+        tap_side = trafo_params.tap_side
+
+        nominal_ratio = vn_hv_kv / vn_lv_kv
+        
+        if tap_side == "hv":
+            actual_ratio_calculated = nominal_ratio * (1 + (actual_tap_pos - tap_neutral) * (tap_step_percent / 100.0))
+        elif tap_side == "lv":
+            actual_ratio_calculated = nominal_ratio / (1 + (actual_tap_pos - tap_neutral) * (tap_step_percent / 100.0))
+        else: # "neutral" o no especificado, sin cambio por tap
+            actual_ratio_calculated = nominal_ratio
+
+        #print(f"\n--- Info del Paso {self.step_count} (Acción de Tap: {action}) ---")
+        #print(f"  Posición de Tap Aplicada: {actual_tap_pos}")
+        #print(f"  Posición Neutral: {tap_neutral}, Paso: {tap_step_percent}%, Lado Tap: {tap_side}")
+        #print(f"  Ratio Nominal (V_hv_nom / V_lv_nom): {vn_hv_kv:.3f}kV / {vn_lv_kv:.3f}kV = {nominal_ratio:.4f}")
+        #print(f"  Relación de Transformación Teórica Calculada (V_hv_eff / V_lv_eff): {actual_ratio_calculated:.4f}")
+        # --- Fin Información ---
+
         pp.runpp(self.net)
-        next_state=self.get_state()
-        reward=self.calculate_reward()
-        done=self.is_done()
-        #tension=self.net.res_trafo['vm_lv_pu']
+
+        # Voltajes resultantes en los terminales del transformador
+        vm_hv_pu_trafo = self.net.res_trafo.vm_hv_pu.iloc[0]
+        vm_lv_pu_trafo = self.net.res_trafo.vm_lv_pu.iloc[0]
+        if vm_lv_pu_trafo != 0 and vn_lv_kv !=0 : # Evitar división por cero
+            # Ratio_from_voltages = (Vhv_actual_terminal / Vlv_actual_terminal)
+            # Vhv_actual_terminal = vm_hv_pu_trafo * vn_hv_kv (asumiendo vm_hv_pu es referido a vn_hv_kv del trafo)
+            # Vlv_actual_terminal = vm_lv_pu_trafo * vn_lv_kv (asumiendo vm_lv_pu es referido a vn_lv_kv del trafo)
+            # Pandapower res_trafo.vm_hv_pu y vm_lv_pu son referidos a las tensiones nominales de los buses HV y LV a los que se conecta el trafo.
+            # Si vn_kv del bus HV es igual a vn_hv_kv del trafo, y vn_kv del bus LV es igual a vn_lv_kv del trafo, entonces:
+            bus_hv_idx = self.net.trafo.hv_bus.iloc[0]
+            bus_lv_idx = self.net.trafo.lv_bus.iloc[0]
+            v_hv_bus_kv = self.net.res_bus.vm_pu.iloc[bus_hv_idx] * self.net.bus.vn_kv.iloc[bus_hv_idx]
+            v_lv_bus_kv = self.net.res_bus.vm_pu.iloc[bus_lv_idx] * self.net.bus.vn_kv.iloc[bus_lv_idx]
+            
+            if v_lv_bus_kv != 0:
+                 ratio_from_voltages = v_hv_bus_kv / v_lv_bus_kv
+                 #print(f"  Voltaje HV en bus trafo ({self.net.bus.name.iloc[bus_hv_idx]}): {self.net.res_bus.vm_pu.iloc[bus_hv_idx]:.4f} pu ({v_hv_bus_kv:.2f} kV)")
+                 #print(f"  Voltaje LV en bus trafo ({self.net.bus.name.iloc[bus_lv_idx]}): {self.net.res_bus.vm_pu.iloc[bus_lv_idx]:.4f} pu ({v_lv_bus_kv:.2f} kV)")
+                 #print(f"  Relación de Voltajes en Terminales (V_hv_term / V_lv_term): {ratio_from_voltages:.4f}")
+
+        next_state = self.get_state()
+        reward = self.calculate_reward()
+        done = self.is_done()
+        
         return next_state, reward, done
+
+    def _get_raw_state(self):
+        """Método interno para obtener los valores del estado sin correr flujo de potencia adicional."""
+        # Asegurarse que los resultados existen (pp.runpp debe haber sido llamado antes)
+        if self.net.res_bus is None or 'vm_pu' not in self.net.res_bus:
+            # Esto podría pasar si pp.runpp no convergió o no se ha ejecutado
+            print("Advertencia: Resultados del flujo de potencia no disponibles en _get_raw_state. Devolviendo estado por defecto.")
+            # Estado por defecto con la nueva dimensionalidad (voltaje, p_act, p_react, tap_pos, hora_norm)
+            #Número de buses es self.net.bus.shape[0], deberia ser 34
+            num_buses = 34
+            default_tap_pos = float(self.net.trafo.tap_neutral.iloc[0]) if not self.net.trafo.empty else 16.0
+            default_state_values=[0.0]*(3*num_buses)
+            default_state_values.extend([default_tap_pos, 0.0])
+            return tuple(default_state_values)
+
+            # Usamos tap_neutral como valor por defecto para el tap y 0.0 para la hora normalizada.
+            #default_tap_pos = float(self.net.trafo.tap_neutral.iloc[0]) if not self.net.trafo.empty else 16.0
+            #return (0.0, 0.0, 0.0, default_tap_pos, 0.0) 
+            
+        # Parametros que obtenemos del sistema
+        # El bus con índice 2 es "Bus 2" en este modelo
+        #voltaje = self.net.res_bus.vm_pu.at[6]        #Tensiones en los nodos de la red
+        #active_power = self.net.res_bus.p_mw.at[6]    #Potencia activa en los nodos de la red
+        #reactive_power = self.net.res_bus.q_mvar.at[6]#Potencia reactiva en los nodos de la red
+        all_voltajes=self.net.res_bus.vm_pu.values.tolist()
+        all_active_power=self.net.res_bus.p_mw.values.tolist()
+        all_reactive_power=self.net.res_bus.q_mvar.values.tolist()
+
+        
+        # Información adicional para el estado
+        current_tap_pos = float(self.net.trafo.tap_pos.iloc[0])
+
+        # Normalizar la hora actual (self.step_count va de 0 o 1 a MAX_STEPS)
+        # Si self.step_count es 0 en reset, y 1-24 durante los pasos:
+        # Para el estado inicial (step_count=0), normalized_hour será (0-1)/(24-1) = -1/23 approx -0.043
+        # Para el primer paso (step_count=1), normalized_hour será (1-1)/(24-1) = 0
+        # Para el último paso (step_count=24), normalized_hour será (24-1)/(24-1) = 1
+        normalized_hour = (self.step_count - 1) / (self.MAX_STEPS - 1) if self.MAX_STEPS > 1 else 0.0
+        state_list = []
+        state_list.extend(all_voltajes) # Correcto: extiende con los elementos de la lista
+        state_list.extend(all_active_power) # Correcto: extiende con los elementos de la lista
+        state_list.extend(all_reactive_power) # Correcto: extiende con los elementos de la lista
+        state_list.extend([current_tap_pos, normalized_hour])
+        state=tuple(state_list)
+        #state = (voltaje, active_power, reactive_power, current_tap_pos, normalized_hour)
+        return state
+
     #----------- Obtención del estado del sistema 
     def get_state(self): 
         try:
             pp.runpp(self.net)
         except Exception as e:
             print(f"Error al ejecutar el flujo de potencia:{e}")
-            raise
-        # Parametros que obtenemos del sistema
-        voltaje=self.net.res_bus.vm_pu.at[1]                           #Tensiones en los nodos de la red
-        active_power=self.net.res_bus.p_mw.at[1]                       #Potencia activa en los nodos de la red
-        reactive_power=self.net.res_bus.q_mvar.at[1]                   #Potencia reactiva en los nodos de la red
-        #line_loadings=(self.net.res_line.loading_percent.values)[1]      #Cargabilidad de las lineas
-        state=(voltaje, active_power, reactive_power) 
-        return state
+            # En caso de error, podrías devolver un estado por defecto o propagar el error
+            # Devolvemos un estado por defecto con la nueva dimensionalidad
+            num_buses=34
+            default_tap_pos = float(self.net.trafo.tap_neutral.iloc[0]) if not self.net.trafo.empty else 16.0
+            default_state_values=[0.0]*(3*num_buses)
+            default_state_values.extend([default_tap_pos, 0.0])
+            return tuple(default_state_values)
 
-    def is_done(self):  #determinar si el episodio ha terminado
-        done=False
-        return done
-    
+            #return (0.0, 0.0, 0.0, default_tap_pos, 0.0)
+        
+        return self._get_raw_state()
+
     def variables_interes(self):
         Vnodos=self.net.res_bus["vm_pu"]
         Pnodos=self.net.res_bus["p_mw"]

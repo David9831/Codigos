@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F 
 import torch
 
+
 class IEEE33BusSystem:
     def __init__(self):
         self.net = pp.create_empty_network(f_hz=60,sn_mva=1)
@@ -23,10 +24,10 @@ class IEEE33BusSystem:
             0.4, 0.38, 0.37, 0.41, 0.49, 0.34, 0.61, 0.81, 1.0, 0.86, 0.69, 0.36
         ]
         self.perfil_voltaje = []
-        self.setup_network()
-        #self.state_dim = self.get_state()  #----------->Calcular la dimensión del estado del sistema de distribucion 
+        self.setup_network() 
         self.step_count = 0
         self.MAX_STEPS = 24
+        self.controlled_shunt_idx=0
 
     def is_done(self):
         # Terminar el episodio si se alcanza el límite de pasos
@@ -95,17 +96,17 @@ class IEEE33BusSystem:
             tap_pos=16
         )
         #    pp.create_shunt(self.net, bus=node, q_mvar=0.5,step=1, max_step=6, name=f"Capacitor 300 Kvar Node {node}")
-        pp.create_shunt(self.net, bus=6, q_mvar=2.5,step=1, max_step=6, name=f"Capacitor en el nodo 6")  #capacitor de 150 Kvar
+        pp.create_shunt(self.net, bus=6, q_mvar=-0.15,step=0, max_step=4, name=f"Capacitor en el nodo 6")  #capacitor de 150 Kvar
         #pp.create_shunt(self.net, bus=8, q_mvar=0.5,step=1, max_step=3, name=f"Capacitor en el nodo 8")  #capacitor de 150 Kvar
         #pp.create_shunt(self.net, bus=13, q_mvar=0.5,step=1, max_step=3, name=f"Capacitor en el nodo 13")  #capacitor de 150 Kvar
         #pp.create_shunt(self.net, bus=27, q_mvar=0.5,step=1, max_step=3, name=f"Capacitor en el nodo 27")  #capacitor de 150 Kvar
         #pp.create_shunt(self.net, bus=30, q_mvar=0.5,step=1, max_step=3, name=f"Capacitor en el nodo 30")  #capacitor de 150 Kvar
-        self.action_dim=6      #Cantidad de pasos del banco de capacitores
+        self.action_dim=4      #Cantidad de pasos del banco de capacitores
 
         # Agregar líneas de distribución
         a=0
         b=1
-        pp.create_line_from_parameters(self.net, from_bus=b0, to_bus=b1, length_km=1, r_ohm_per_km=0.0922,x_ohm_per_km=0.0470, c_nf_per_km=a, max_i_ka=b)
+        #pp.create_line_from_parameters(self.net, from_bus=b0, to_bus=b1, length_km=1, r_ohm_per_km=0.0922,x_ohm_per_km=0.0470, c_nf_per_km=a, max_i_ka=b)
         pp.create_line_from_parameters(self.net, from_bus=b1, to_bus=b2, length_km=1, r_ohm_per_km=0.4930,x_ohm_per_km=0.2511, c_nf_per_km=a, max_i_ka=b)
         pp.create_line_from_parameters(self.net, from_bus=b2, to_bus=b3, length_km=1, r_ohm_per_km=0.3660,x_ohm_per_km=0.1864, c_nf_per_km=a, max_i_ka=b)
         pp.create_line_from_parameters(self.net, from_bus=b3, to_bus=b4, length_km=1, r_ohm_per_km=0.3811,x_ohm_per_km=0.1941, c_nf_per_km=a, max_i_ka=b)
@@ -138,8 +139,6 @@ class IEEE33BusSystem:
         pp.create_line_from_parameters(self.net, from_bus=b30, to_bus=b31, length_km=1, r_ohm_per_km=0.3105,x_ohm_per_km=0.3619, c_nf_per_km=a, max_i_ka=b)
         pp.create_line_from_parameters(self.net, from_bus=b31, to_bus=b32, length_km=1, r_ohm_per_km=0.3410,x_ohm_per_km=0.5302, c_nf_per_km=a, max_i_ka=b)
         pp.create_line_from_parameters(self.net, from_bus=b32, to_bus=b33, length_km=1, r_ohm_per_km=0.0922,x_ohm_per_km=0.0470, c_nf_per_km=a, max_i_ka=b)
-
-
 
         # Agregar cargas en los nodos
         pp.create_load(self.net, bus=b1, p_mw=self.base_loads[0][0], q_mvar=self.base_loads[0][1], name="Load 1")
@@ -175,7 +174,7 @@ class IEEE33BusSystem:
         pp.create_load(self.net, bus=b31, p_mw=self.base_loads[30][0], q_mvar=self.base_loads[30][1], name="Load 31")
         pp.create_load(self.net, bus=b32, p_mw=self.base_loads[31][0], q_mvar=self.base_loads[31][1], name="Load 32")
 
-#--------------Actualización de las cargas dependiendo de la demanda horaria
+#--------------Actualización de las cargas dependiendo de la demanda horaria-------------------------
     def update_loads(self, hora):
         for j in range (hora):                                                        
             for i, (p_base, q_base) in enumerate(self.base_loads):
@@ -183,73 +182,47 @@ class IEEE33BusSystem:
                    self.net.load.at[i, 'q_mvar'] = q_base * self.porcentaje_demanda[j]
         carga_hora=self.net.load
         return carga_hora
-#--------------Resetear el sistema de distribucion con las cargas iniciales 
+#--------------Resetear el sistema de distribucion con las cargas iniciales-------------------------
     def reset(self):
         for i, (p_base, q_base) in enumerate(self.base_loads):
             self.net.load.at[i, 'p_mw'] = p_base
             self.net.load.at[i, 'q_mvar'] = q_base
             carga0=self.net.load
         return carga0
-#--------------Función de recompensa
+#--------------Función de recompensa-------------------------------------------------------
     def calculate_reward(self, previous_step, current_step):
-        """
-        Calcula la recompensa basada en desviaciones de voltaje, potencia reactiva
-        y la penalización por cambiar el estado del capacitor.
-
-        Args:
-            previous_step (int): El paso del capacitor *antes* de la acción.
-            current_step (int): El paso del capacitor *después* de la acción (la acción tomada).
-
-        Returns:
-            float: El valor de la recompensa.
-        """
         # --- Penalización por Voltaje ---
         # Asegúrate de que res_bus no esté vacío y tenga 'vm_pu'
         if self.net.res_bus.empty or 'vm_pu' not in self.net.res_bus.columns:
             print("Advertencia: res_bus vacío o sin 'vm_pu' al calcular recompensa.")
             penalizacion_voltaje = 1000 # Penalización alta si no hay resultados
         else:
-            voltajes = self.net.res_bus.vm_pu.values
+            voltajes = self.net.res_bus.vm_pu[[6]].values   #<----------aqui se modifica los nodos que se tienen en cuenta
             # Penaliza desviaciones de 1.0 pu
-            penalizacion_voltaje = np.sum((voltajes - 1.0)**2)
+            penalizacion_voltaje = np.sum((voltajes - 1.0)**2)             #<----------Penaliza cualquier desviacion de tensión 
             # Opcional: Penalizar más fuerte si está fuera de límites (e.g., <0.95 o >1.05)
             penalizacion_limites = np.sum((voltajes[voltajes < 0.95] - 0.95)**2) + \
                                    np.sum((voltajes[voltajes > 1.05] - 1.05)**2)
+            #penalizacion_voltaje = 0
             penalizacion_voltaje += penalizacion_limites * 10 # Ponderar más fuerte
-
-        # --- Penalización por Potencia Reactiva (Opcional, a veces se enfoca solo en voltaje) ---
-        # Podrías penalizar la potencia reactiva total de la red externa,
-        # o la potencia reactiva en ciertos buses si es relevante.
         # Aquí mantenemos tu cálculo original (penaliza toda Q en buses)
         if self.net.res_bus.empty or 'q_mvar' not in self.net.res_bus.columns:
              penalizacion_reactiva = 1000 # Penalización alta
         else:
-            potencia_reactiva_buses = np.abs(self.net.res_bus.q_mvar.values)
+            potencia_reactiva_buses = np.abs(self.net.res_bus.q_mvar[[6]].values)
             penalizacion_reactiva = np.sum(potencia_reactiva_buses)
-
         # --- Penalización por Acción del Capacitor ---
         step_change = abs(current_step - previous_step)
-        # Penalización lineal: penalizacion_accion = step_change
-        # Penalización cuadrática (penaliza saltos grandes más fuerte):
         penalizacion_accion = step_change ** 2
 
-        # --- Pesos de las Penalizaciones (¡AJUSTAR ESTOS VALORES!) ---
         w1 = 10.0   # Peso para desviación de voltaje
         w2 = 0.1    # Peso para potencia reactiva (reducido si el foco es voltaje)
         w3 = 5.0    # Peso para cambio de step del capacitor (¡AJUSTAR PARA PENALIZACIÓN FUERTE!)
 
-        # --- Cálculo de la Recompensa Total ---
-        # La recompensa es negativa porque queremos minimizar las penalizaciones
-        # El denominador es un factor de escala, ajústalo si las recompensas son muy grandes/pequeñas
         normalization_factor = 100 # Ajusta este factor según sea necesario
         reward = -(w1 * penalizacion_voltaje + w2 * penalizacion_reactiva + w3 * penalizacion_accion) / normalization_factor
-
-        # Opcional: Añadir una pequeña recompensa positiva si el voltaje está dentro de límites
-        # if np.all((voltajes >= 0.95) & (voltajes <= 1.05)):
-        #    reward += 0.1 # Pequeño bonus
-
         return reward
-#--------------Definición de la acción del actor    
+#--------------Definición de la acción del actor---------------------------------------------------   
     def step(self, action):
         """
         Aplica la acción (nuevo step del capacitor), ejecuta el flujo de potencia,
@@ -339,9 +312,9 @@ class IEEE33BusSystem:
         done = self.is_done()
 
         return next_state, reward, done
-#-----------Obtención del estado del sistema 
+#-----------Obtención del estado del sistema-------------------------------------------------------------- 
     def get_state(self):               # obtener el estado actual del sistema 
-        NEW_STATE_DIM = 16
+        NEW_STATE_DIM = 4
         try:
             # Ensure power flow is run to have results
             pp.runpp(self.net, algorithm='nr', calculate_voltage_angles=True) # Use Newton-Raphson for better convergence sometimes
@@ -354,7 +327,7 @@ class IEEE33BusSystem:
             raise # Re-raise other unexpected errors
 
         # Indices of interest
-        bus_indices = [6, 8, 13, 27, 30] # Define once for clarity and consistency
+        bus_indices = [6] # Define once for clarity and consistency
 
         # Check if results are available
         if self.net.res_bus.empty:
@@ -397,7 +370,7 @@ class IEEE33BusSystem:
             print(f"Error inesperado al obtener el estado del capacitor: {e}")
             raise
 
-        if not (len(voltaje) == 5 and len(active_power) == 5 and len(reactive_power) == 5):
+        if not (len(voltaje) == 1 and len(active_power) == 1 and len(reactive_power) == 1):
              print(f"Error: Longitud inesperada de los vectores extraídos. V:{len(voltaje)}, P:{len(active_power)}, Q:{len(reactive_power)}")
              print("Advertencia: Retornando estado cero debido a longitud incorrecta.")
              return np.zeros(NEW_STATE_DIM, dtype=np.float32)

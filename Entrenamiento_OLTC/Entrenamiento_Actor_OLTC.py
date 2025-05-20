@@ -1,24 +1,29 @@
+import os # <--- Añadir esta línea
+os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE" # <--- Añadir esta línea
+
 import torch
 import numpy as np
 import torch.nn.functional as F 
 from IEEE_34_Bus_System_OLTC import IEEE33BusSystem
 from Actor_Critico_Buffer_OLTC import Actor, Critic, ReplayBuffer
-
-# Hiperparámetros
-STATE_DIM = 3         # Dimensión del estado (ajustar según tu entorno)
-ACTION_DIM = 33         # Número de taps del transformador (0-32)
-HIDDEN_DIM = 256        # Dimensión de las capas ocultas
+import matplotlib.pyplot as plt # <--- Añadir importación para graficar
+indices_buses_recompensa=None
 BUFFER_CAPACITY = 10000
-BATCH_SIZE = 64
-NUM_EPISODES = 7
+BATCH_SIZE = 512
+NUM_EPISODES = 500
 GAMMA = 0.99            # Factor de descuento
 TAU = 0.005             # Para la actualización suave de los críticos objetivo
-ALPHA = 0.02             # Coeficiente de entropía
-LR_ACTOR = 1e-4         # Tasa de aprendizaje del Actor
-LR_CRITIC = 1e-3        # Tasa de aprendizaje de los Críticos
+ALPHA = 0.0005          # Coeficiente de entropía
+LR_ACTOR = 3e-5         # Tasa de aprendizaje del Actor
+LR_CRITIC = 1e-4        # Tasa de aprendizaje de los Críticos
 
 # Inicializar el entorno
-env = IEEE33BusSystem()
+env = IEEE33BusSystem(reward_bus_indices=indices_buses_recompensa)
+
+# Hiperparámetros dinámicos del entorno
+STATE_DIM = env.state_dim         # Dimensión del estado
+ACTION_DIM = env.action_dim       # Número de acciones (taps)
+HIDDEN_DIM = 256                  # Dimensión de las capas ocultas
 
 # Inicializar el Actor y los Críticos
 actor = Actor(STATE_DIM, ACTION_DIM, HIDDEN_DIM)
@@ -57,6 +62,10 @@ def update_target_networks():
 # Entrenamiento del Actor
 def train_actor():
     episode_rewards = []
+    # Listas para almacenar las pérdidas en cada paso de actualización
+    all_critic1_losses = []
+    all_critic2_losses = []
+    all_actor_losses = []
 
     for episode in range(NUM_EPISODES):
         print(f"Iniciando episodio {episode+1}...")
@@ -70,9 +79,8 @@ def train_actor():
             env.update_loads(hora)                                #-----Actualiza las cargas según la demanda horaria 
             state=env.get_state()                                 #-----Se obitene el estado del sistema según la demanda horaria 
             state_tensor = torch.FloatTensor(state).unsqueeze(0)           #-----El estado se vuelve un tensor 
-            action, log_prob = actor.get_action(state_tensor)     #-----Se obtiene la acción del Actor
+            action, log_prob = actor.get_action(state_tensor.to(device))     #-----Se obtiene la acción del Actor
             next_state, reward, done = env.step(action)           #-----Se ejecuta la acción del Actor en el entorno
-            next_state_tensor= torch.FloatTensor(next_state)      #-----El siguiente estado se vuelve un tensor 
             #print(f"Paso {step_count}: Acción = {action}, Recompensa = {reward}, Done = {done},estado={next_state}")
 
             # Almacenar la experiencia en el buffer
@@ -104,7 +112,6 @@ def train_actor():
                     target_q2 = target_critic2(next_states, next_actions)
                     target_q = torch.min(target_q1, target_q2) - ALPHA * next_log_probs   # verificar en los articulos
                     target_q = rewards + GAMMA * (1 - dones) * target_q
-                    target_q = target_q.unsqueeze(-1).expand(-1,64)
 
                 # Calcular los valores Q actuales
                 current_q1 = critic1(states, actions)
@@ -113,6 +120,9 @@ def train_actor():
                 # Calcular la pérdida de los Críticos
                 critic1_loss = F.mse_loss(current_q1, target_q)
                 critic2_loss = F.mse_loss(current_q2, target_q)
+                # Guardar las pérdidas
+                all_critic1_losses.append(critic1_loss.item())
+                all_critic2_losses.append(critic2_loss.item())
 
                 # Actualizar los Críticos
                 critic1_optimizer.zero_grad()
@@ -128,6 +138,8 @@ def train_actor():
                 q1_new = critic1(states, new_actions)
                 q2_new = critic2(states, new_actions)
                 actor_loss = (ALPHA * log_probs - torch.min(q1_new, q2_new)).mean()
+                # Guardar la pérdida del actor
+                all_actor_losses.append(actor_loss.item())
 
                 # Actualizar el Actor
                 actor_optimizer.zero_grad()
@@ -143,7 +155,7 @@ def train_actor():
             #    print(f"Episodio {episode+1} terminado despues de {step_count}")
 
         #Guardar la recompensa y el episodio
-        episode_rewards.append(episode_rewards)
+        episode_rewards.append(episode_reward)
         #print(env.get_state())
         Vnodos,_,_=env.variables_interes()
         print(f"Episodio {episode + 1}/{NUM_EPISODES}, Recompensa: {episode_reward}")
@@ -154,8 +166,46 @@ def train_actor():
     #torch.save(actor.state_dict(), "actor_model.pth")
     #print("Modelo del Actor guardado.")
 
-    return episode_rewards
+    return episode_rewards, all_critic1_losses, all_critic2_losses, all_actor_losses
 
 # Ejecutar el entrenamiento
 if __name__ == "__main__":
-    rewards = train_actor()
+    episode_rewards, critic1_losses, critic2_losses, actor_losses = train_actor()
+
+    # Graficar resultados
+    plt.figure(figsize=(15, 10))
+
+    # Gráfica de Recompensas por Episodio
+    plt.subplot(2, 2, 1)
+    plt.plot(episode_rewards)
+    plt.title('Recompensa por Episodio')
+    plt.xlabel('Episodio')
+    plt.ylabel('Recompensa Total del Episodio')
+    plt.grid(True)
+
+    # Gráfica de Pérdida del Crítico 1
+    plt.subplot(2, 2, 2)
+    plt.plot(critic1_losses)
+    plt.title('Pérdida del Crítico 1')
+    plt.xlabel('Paso de Actualización de Red')
+    plt.ylabel('Pérdida (MSE)')
+    plt.grid(True)
+
+    # Gráfica de Pérdida del Crítico 2
+    plt.subplot(2, 2, 3)
+    plt.plot(critic2_losses)
+    plt.title('Pérdida del Crítico 2')
+    plt.xlabel('Paso de Actualización de Red')
+    plt.ylabel('Pérdida (MSE)')
+    plt.grid(True)
+
+    # Gráfica de Pérdida del Actor
+    plt.subplot(2, 2, 4)
+    plt.plot(actor_losses)
+    plt.title('Pérdida del Actor')
+    plt.xlabel('Paso de Actualización de Red')
+    plt.ylabel('Pérdida')
+    plt.grid(True)
+
+    plt.tight_layout() # Ajusta automáticamente los parámetros del subplot para dar un buen ajuste.
+    plt.show()

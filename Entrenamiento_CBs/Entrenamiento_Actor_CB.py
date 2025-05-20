@@ -6,21 +6,22 @@ import pandapower as pp
 from IEEE_33_Bus_System_CB import IEEE33BusSystem
 from Actor_Critico_Buffer_CB import Actor, Critic, ReplayBuffer
 import os
+from datetime import date
 from tqdm import tqdm as bar
 
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-STATE_DIM = 16            # Dimensión del estado (ajustar según tu entorno)
-ACTION_DIM = 6           # Número de taps del transformador (0-32)
-HIDDEN_DIM = 256         # Dimensión de las capas ocultas
-BUFFER_CAPACITY = 10000  # Capacidad del buffer Ajustado a un mes
-BATCH_SIZE = 256         #tamaño del batch ajustado a un dia
+STATE_DIM = 4            # Dimensión del estado (ajustar según tu entorno)
+ACTION_DIM = 4            # Número de taps del transformador (0-32)
+HIDDEN_DIM = 256          # Dimensión de las capas ocultas
+BUFFER_CAPACITY = 10000   # Capacidad del buffer Ajustado a un mes
+BATCH_SIZE = 512          #tamaño del batch ajustado a un dia
 NUM_EPISODES = 500
 ALPHA = 0.02
-GAMMA = 0.99             # Factor de descuento
-TAU = 0.005              # Para la actualización suave de los críticos objetivo
-LR_ACTOR = 1e-4          # Tasa de aprendizaje del Actor
-LR_CRITIC = 1e-3         # Tasa de aprendizaje de los Críticos
+GAMMA = 0.99              # Factor de descuento
+TAU = 0.005               # Para la actualización suave de los críticos objetivo
+LR_ACTOR = 1e-4           # Tasa de aprendizaje del Actor
+LR_CRITIC = 1e-4          # Tasa de aprendizaje de los Críticos
 # Inicializar el entorno
 env = IEEE33BusSystem()
 #----------------Inicializar el Actor y los Críticos
@@ -45,13 +46,13 @@ critic1.to(device)
 critic2.to(device)
 target_critic1.to(device)
 target_critic2.to(device)
-#-----------------Función para actualizar los Críticos objetivo
+#-----------------Función para actualizar los Críticos objetivo---------------------------
 def update_target_networks():
     for param, target_param in zip(critic1.parameters(), target_critic1.parameters()):
         target_param.data.copy_(TAU * param.data + (1 - TAU) * target_param.data)
     for param, target_param in zip(critic2.parameters(), target_critic2.parameters()):
         target_param.data.copy_(TAU * param.data + (1 - TAU) * target_param.data)
-#-----------------Entrenamiento del Actor
+#-----------------Entrenamiento del Actor-------------------------------------------------
 def train_actor():
     episode_rewards = []
     critic1_losses = []   # Lista para guardar las pérdidas de critic1
@@ -72,7 +73,7 @@ def train_actor():
         episode_reward = 0.0
         episode_actions = []
         for hora in range (1,25):
-            env.reset()
+            #env.reset()
             env.update_loads(hora)
             state = env.get_state()
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
@@ -80,7 +81,7 @@ def train_actor():
             action_value = action_tensor.item()
             next_state, reward, done = env.step(action_value)
             buffer.push(state, action_value, reward, next_state, done)
-            state = next_state
+            #state = next_state
             episode_reward += reward  
             episode_actions.append(action_value) 
             if len(buffer) >= BATCH_SIZE:
@@ -131,7 +132,7 @@ def train_actor():
                 actor_loss.backward()
                 actor_optimizer.step()
     
-                #------------------Actualizar los Críticos Objetivo
+                #------------------Actualizar los Críticos Objetivo------------------------------
                 update_target_networks()
         # Guardar la recompensa y el episodio
         episode_rewards.append(episode_reward)
@@ -139,10 +140,28 @@ def train_actor():
         print(f"Episodio {episode + 1}/{NUM_EPISODES}, Recompensa: {episode_reward}")
 
     # Guardar el modelo entrenado del Actor y los criticos
-    #torch.save(actor.state_dict(), "actor_model.pth")
-    #torch.save(critic1.state_dict(), "critic1_model.pth")
-    #torch.save(critic2.state_dict(), "critic2_model.pth")
-    #print("Modelo del Actor y los criticos guardado.")
+    # Obtener fecha actual y formatearla
+    today_str = date.today().strftime("%Y-%m-%d") # Formato YYYY-MM-DD
+
+    # Definir directorios
+    base_save_dir = "modelo"
+    save_dir = os.path.join(base_save_dir, today_str)
+
+    # Crear el directorio si no existe (incluyendo el directorio base 'modelo')
+    # exist_ok=True evita un error si el directorio ya existe
+    os.makedirs(save_dir, exist_ok=True)
+    print(f"Creando/Verificando directorio de guardado: {save_dir}")
+
+    # Definir rutas completas para los archivos del modelo
+    actor_save_path = os.path.join(save_dir, "actor_model.pth")
+    critic1_save_path = os.path.join(save_dir, "critic1_model.pth")
+    critic2_save_path = os.path.join(save_dir, "critic2_model.pth")
+
+    # Guardar los modelos en el directorio específico
+    #torch.save(actor.state_dict(), actor_save_path)
+    #torch.save(critic1.state_dict(), critic1_save_path)
+    #torch.save(critic2.state_dict(), critic2_save_path)
+    #print(f"Modelos del Actor y los críticos guardados en: {save_dir}")
 
     return episode_rewards, critic1_losses, critic2_losses, actor_losses, all_actions
 

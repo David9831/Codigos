@@ -10,17 +10,17 @@ from tqdm import tqdm as bar
 
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-STATE_DIM = 3            # Dimensión del estado (ajustar según tu entorno)
-ACTION_DIM = 6           # Número de taps del transformador (0-32)
-HIDDEN_DIM = 256         # Dimensión de las capas ocultas
-BUFFER_CAPACITY = 10000  # Capacidad del buffer Ajustado a un mes
-BATCH_SIZE = 512         #tamaño del batch ajustado a un dia
+STATE_DIM = 4            # Dimensión del estado (ajustar según tu entorno)
+ACTION_DIM = 4            # Número de taps del transformador (0-32)
+HIDDEN_DIM = 256          # Dimensión de las capas ocultas
+BUFFER_CAPACITY = 50000   # Capacidad del buffer Ajustado a un mes
+BATCH_SIZE = 512          #tamaño del batch ajustado a un dia
 NUM_EPISODES = 500
 ALPHA = 0.02
-GAMMA = 0.99             # Factor de descuento
-TAU = 0.005              # Para la actualización suave de los críticos objetivo
-LR_ACTOR = 1e-4          # Tasa de aprendizaje del Actor
-LR_CRITIC = 1e-3         # Tasa de aprendizaje de los Críticos
+GAMMA = 0.9               # Factor de descuento
+TAU = 0.005               # Para la actualización suave de los críticos objetivo
+LR_ACTOR = 1e-4           # Tasa de aprendizaje del Actor
+LR_CRITIC = 1e-4          # Tasa de aprendizaje de los Críticos
 # Inicializar el entorno
 env = IEEE33BusSystem()
 #----------------Inicializar el Actor y los Críticos
