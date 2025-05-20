@@ -15,13 +15,13 @@ STATE_DIM = 4            # Dimensión del estado (ajustar según tu entorno)
 ACTION_DIM = 4            # Número de taps del transformador (0-32)
 HIDDEN_DIM = 256          # Dimensión de las capas ocultas
 BUFFER_CAPACITY = 10000   # Capacidad del buffer Ajustado a un mes
-BATCH_SIZE = 512          #tamaño del batch ajustado a un dia
+BATCH_SIZE = 128          #tamaño del batch ajustado a un dia
 NUM_EPISODES = 500
-ALPHA = 0.02
-GAMMA = 0.99              # Factor de descuento
-TAU = 0.005               # Para la actualización suave de los críticos objetivo
-LR_ACTOR = 1e-4           # Tasa de aprendizaje del Actor
-LR_CRITIC = 1e-4          # Tasa de aprendizaje de los Críticos
+ALPHA = 0.008361361478747546
+GAMMA = 0.996326795984417              # Factor de descuento
+TAU = 0.023825128534427677             # Para la actualización suave de los críticos objetivo
+LR_ACTOR = 0.0007408741706924384           # Tasa de aprendizaje del Actor
+LR_CRITIC = 0.00022985190708997683          # Tasa de aprendizaje de los Críticos
 # Inicializar el entorno
 env = IEEE33BusSystem()
 #----------------Inicializar el Actor y los Críticos
