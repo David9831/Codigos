@@ -26,10 +26,14 @@ class IEEE33BusSystem:
         self.ACTION_DIM_CAP = 4 # Number of discrete capacitor steps (0, 1, 2, 3)
         self.ACTION_DIM_TAP = 3 # Number of discrete tap actions (Keep, Up, Down)
         self.ACTION_DIM = self.ACTION_DIM_CAP * self.ACTION_DIM_TAP # Total combined actions
+        
+        # Define TARGET_BUS_INDICES before calculating STATE_DIM
+        # Los buses en pandapower son 0-indexados. Los buses b1 a b33 tendrán índices 1 a 33.
+        # Incluiremos los buses del 1 al 33 en el estado.
+        self.TARGET_BUS_INDICES = list(range(1, 34)) # Monitorea los buses del 1 al 33
         # State: Voltage, Active Power, Reactive Power (at target bus), Capacitor Step, Transformer Tap Position
-        self.STATE_DIM = 4 + 1 # 3 metrics per target bus + Cap Step + Tap Pos (assuming 1 target bus)
+        self.STATE_DIM = (3 * len(self.TARGET_BUS_INDICES)) + 1 + 1 # 3 metrics per target bus + Cap Step + Tap Pos
         self.MAX_STEPS = 24 # Number of hours in a day
-        self.TARGET_BUS_INDICES = [6] # Bus indices to include in the state and reward calculation
         self.CONTROLLED_TRAFO_INDEX = 0 # Index of the transformer controlled by the agent
         self.CONTROLLED_SHUNT_INDEX = 0 # Index of the shunt element controlled by the agent
 

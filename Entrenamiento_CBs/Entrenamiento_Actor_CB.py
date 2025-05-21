@@ -22,7 +22,7 @@ BUFFER_CAPACITY = 50000   # Capacidad del buffer Ajustado a un mes
 BATCH_SIZE = 64          #tamaño del batch ajustado a un dia
 NUM_EPISODES = 500        # Número de episodios de entrenamiento
 #ALPHA = 0.02
-ALPHA = 0.004509576610018183
+ALPHA = 0.005
 GAMMA = 0.9737581536511235             # Factor de descuento
 TAU = 0.025498056562388974             # Para la actualización suave de los críticos objetivo
 LR_ACTOR = 0.0008920468488766326           # Tasa de aprendizaje del Actor
@@ -140,7 +140,7 @@ def train_actor():
                 actor_loss.backward()
                 actor_optimizer.step()
     
-                #------------------Actualizar los Críticos Objetivo------------------------------
+#------------------Actualizar los Críticos Objetivo------------------------------
                 update_target_networks()
         # Guardar la recompensa y el episodio
         episode_rewards.append(episode_reward)
