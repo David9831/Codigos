@@ -1,6 +1,5 @@
 import optuna
 import torch
-import pandapower as pp # Importar pandapower
 import numpy as np
 from IEEE_33_Bus_System_CB import IEEE33BusSystem
 from Actor_Critico_Buffer_CB import Actor, Critic, ReplayBuffer
@@ -8,8 +7,8 @@ from Actor_Critico_Buffer_CB import Actor, Critic, ReplayBuffer
 def train_sac(params):
     # === Inicialización del entorno ===
     env = IEEE33BusSystem()
-    state_dim = env.STATE_DIM # Get dimensions from the updated env
-    action_dim = env.ACTION_DIM # Get dimensions from the updated env
+    state_dim = 4
+    action_dim = 4
     hidden_dim = params["hidden_dim"]
 
     # === Inicializar redes ===
@@ -45,16 +44,10 @@ def train_sac(params):
 
     total_rewards = []
 
-    for episode in range(40):  # Solo 10 episodios por prueba
+    for episode in range(30):  # Solo 10 episodios por prueba
         env.reset()
         episode_reward = 0
-        # Reset capacitor and tap to initial state (e.g., step 0, tap 16)
-        try:
-            env.net.shunt.at[env.CONTROLLED_SHUNT_INDEX, 'step'] = 0
-            env.net.trafo.at[env.CONTROLLED_TRAFO_INDEX, 'tap_pos'] = 16 # Assuming neutral tap 16
-            pp.runpp(env.net)
-        except Exception as e:
-            print(f"Warning: Could not reset devices at episode start in Optuna trial. {e}")
+
         for hora in range(1, 25):
             env.update_loads(hora)
             state = env.get_state()
@@ -62,7 +55,7 @@ def train_sac(params):
 
             action_tensor, log_prob = actor.get_action(state_tensor)
             action_value = action_tensor.item()
-            
+
             next_state, reward, done = env.step(action_value)
             buffer.push(state, action_value, reward, next_state, done)
             episode_reward += reward
@@ -124,7 +117,7 @@ def objective(trial):
 # === Ejecutar búsqueda ===
 if __name__ == "__main__":
     study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=60)  # Puedes aumentar a 50 o más
+    study.optimize(objective, n_trials=50)  # Puedes aumentar a 50 o más
 
     print("Mejores hiperparámetros:")
     for key, value in study.best_params.items():

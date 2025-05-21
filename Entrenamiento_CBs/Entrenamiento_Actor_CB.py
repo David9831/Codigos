@@ -11,19 +11,22 @@ from tqdm import tqdm as bar
 
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-STATE_DIM = 4            # Dimensión del estado (ajustar según tu entorno)
-ACTION_DIM = 4            # Número de taps del transformador (0-32)
-HIDDEN_DIM = 256          # Dimensión de las capas ocultas
-BUFFER_CAPACITY = 10000   # Capacidad del buffer Ajustado a un mes
-BATCH_SIZE = 128          #tamaño del batch ajustado a un dia
-NUM_EPISODES = 500
-ALPHA = 0.008361361478747546
-GAMMA = 0.996326795984417              # Factor de descuento
-TAU = 0.023825128534427677             # Para la actualización suave de los críticos objetivo
-LR_ACTOR = 0.0007408741706924384           # Tasa de aprendizaje del Actor
-LR_CRITIC = 0.00022985190708997683          # Tasa de aprendizaje de los Críticos
-# Inicializar el entorno
+
+# Inicializar el entorno PRIMERO para obtener sus dimensiones
 env = IEEE33BusSystem()
+
+STATE_DIM = env.STATE_DIM        # Dimensión del estado (obtenida del entorno)
+ACTION_DIM = env.ACTION_DIM      # Número de acciones discretas combinadas (obtenida del entorno)
+HIDDEN_DIM = 256                 # Dimensión de las capas ocultas
+BUFFER_CAPACITY = 50000   # Capacidad del buffer Ajustado a un mes
+BATCH_SIZE = 64          #tamaño del batch ajustado a un dia
+NUM_EPISODES = 500        # Número de episodios de entrenamiento
+#ALPHA = 0.02
+ALPHA = 0.004509576610018183
+GAMMA = 0.9737581536511235             # Factor de descuento
+TAU = 0.025498056562388974             # Para la actualización suave de los críticos objetivo
+LR_ACTOR = 0.0008920468488766326           # Tasa de aprendizaje del Actor
+LR_CRITIC = 0.00034806458261164895         # Tasa de aprendizaje de los Críticos
 #----------------Inicializar el Actor y los Críticos
 actor = Actor(STATE_DIM, ACTION_DIM, HIDDEN_DIM)
 critic1 = Critic(STATE_DIM, ACTION_DIM, HIDDEN_DIM)
@@ -60,25 +63,30 @@ def train_actor():
     actor_losses = []     # Lista para guardar las pérdidas del actor
     all_actions = []      # Lista para guardar todas las acciones tomadas
     for episode in range(NUM_EPISODES):
+        # Resetear el entorno al inicio de cada episodio
+        env.reset() # <-- Mover aquí
         try:
-            env.net.shunt.at[0, 'step'] = 0
+            # Resetear capacitor y tap a estado inicial (ej. step 0, tap 16)
+            env.net.shunt.at[env.CONTROLLED_SHUNT_INDEX, 'step'] = 0 # Usar el índice correcto
+            # Asumiendo que el tap neutral es 16 como en la definición del trafo
+            initial_tap_pos = 16 
+            if env.CONTROLLED_TRAFO_INDEX < len(env.net.trafo): # Check if trafo exists
+                 env.net.trafo.at[env.CONTROLLED_TRAFO_INDEX, 'tap_pos'] = initial_tap_pos
+
             pp.runpp(env.net)
             #print("Banco de capacitores reseteado y flujo de potencia ejecutado.")
         except IndexError:
             print("Advertencia: No se encontró ningún shunt en la red para resetear.")
-        except Exception as e:
-            print(f"Error al resetear capacitor o ejecutar flujo de potencia: {e}")
         print(f"Iniciando episodio {episode + 1}...")
         env.reset()
         episode_reward = 0.0
         episode_actions = []
         for hora in range (1,25):
             #env.reset()
-            env.update_loads(hora)
-            state = env.get_state()
+            state = env.get_state() # Estado ANTES de la acción
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
             action_tensor, log_prob = actor.get_action(state_tensor)
-            action_value = action_tensor.item()
+            action_value = action_tensor.item() # Esto es el índice de la acción combinada
             next_state, reward, done = env.step(action_value)
             buffer.push(state, action_value, reward, next_state, done)
             #state = next_state
@@ -158,10 +166,10 @@ def train_actor():
     critic2_save_path = os.path.join(save_dir, "critic2_model.pth")
 
     # Guardar los modelos en el directorio específico
-    #torch.save(actor.state_dict(), actor_save_path)
-    #torch.save(critic1.state_dict(), critic1_save_path)
-    #torch.save(critic2.state_dict(), critic2_save_path)
-    #print(f"Modelos del Actor y los críticos guardados en: {save_dir}")
+    torch.save(actor.state_dict(), actor_save_path)
+    torch.save(critic1.state_dict(), critic1_save_path)
+    torch.save(critic2.state_dict(), critic2_save_path)
+    print(f"Modelos del Actor y los críticos guardados en: {save_dir}")
 
     return episode_rewards, critic1_losses, critic2_losses, actor_losses, all_actions
 

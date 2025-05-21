@@ -2,13 +2,12 @@ import pandapower as pp
 import numpy as np
 import matplotlib.pyplot as plt
 import pandapower.plotting as pp_plot
-import torch.nn as nn
-import torch.nn.functional as F 
-import torch
+
 
 class IEEE33BusSystem:
     def __init__(self):
         self.net = pp.create_empty_network(f_hz=60,sn_mva=1)
+        # Base loads for 32 buses (from bus 1 to 32)
         self.base_loads = [
             (0.1, 0.06), (0.09, 0.04), (0.12, 0.08), (0.06, 0.03), (0.06, 0.02),
             (0.2, 0.1), (0.2, 0.1), (0.06, 0.02), (0.06, 0.02), (0.045, 0.03),
@@ -21,12 +20,17 @@ class IEEE33BusSystem:
         self.porcentaje_demanda = [
             0.28, 0.25, 0.26, 0.25, 0.23, 0.44, 0.69, 0.44, 0.44, 0.36, 0.38, 0.51,
             0.4, 0.38, 0.37, 0.41, 0.49, 0.34, 0.61, 0.81, 1.0, 0.86, 0.69, 0.36
-        ]
-        self.perfil_voltaje = []
+        ] # Hourly load profile factor (for hours 1 to 24)
+
+        # RL Environment Configuration
+        self.STATE_DIM = 4 # Voltage, Active Power, Reactive Power (at target bus), Capacitor Step
+        self.ACTION_DIM = 4 # Number of discrete capacitor steps (0, 1, 2, 3)
+        self.MAX_STEPS = 24 # Number of hours in a day
+        self.TARGET_BUS_INDICES = [6] # Bus indices to include in the state and reward calculation
+        self.CONTROLLED_SHUNT_INDEX = 0 # Index of the shunt element controlled by the agent
+
         self.setup_network() 
-        self.step_count = 0
-        self.MAX_STEPS = 24
-        self.controlled_shunt_idx=0
+        self.step_count = 0 # Current step within the episode (hour of the day)
 
     def is_done(self):
         # Terminar el episodio si se alcanza el límite de pasos
@@ -35,8 +39,8 @@ class IEEE33BusSystem:
         return False
 
     def setup_network(self):
-        # Crear buses
-        Vnhkv=110
+        # Create buses (Bus 0 is the slack bus connected via transformer)
+        Vnhkv=110 # High voltage side of the transformer
         Vnlkv=12.666
         b0 = pp.create_bus(self.net, vn_kv=Vnhkv, name="Bus 0")
         b1 = pp.create_bus(self.net, vn_kv=Vnlkv, name="Bus 1")
@@ -94,18 +98,15 @@ class IEEE33BusSystem:
             tap_step_percent=1.25, 
             tap_pos=16
         )
-        #    pp.create_shunt(self.net, bus=node, q_mvar=0.5,step=1, max_step=6, name=f"Capacitor 300 Kvar Node {node}")
-        pp.create_shunt(self.net, bus=6, q_mvar=5,step=0, max_step=4, name=f"Capacitor en el nodo 6")  #capacitor de 150 Kvar
-        #pp.create_shunt(self.net, bus=8, q_mvar=0.5,step=1, max_step=3, name=f"Capacitor en el nodo 8")  #capacitor de 150 Kvar
-        #pp.create_shunt(self.net, bus=13, q_mvar=0.5,step=1, max_step=3, name=f"Capacitor en el nodo 13")  #capacitor de 150 Kvar
-        #pp.create_shunt(self.net, bus=27, q_mvar=0.5,step=1, max_step=3, name=f"Capacitor en el nodo 27")  #capacitor de 150 Kvar
-        #pp.create_shunt(self.net, bus=30, q_mvar=0.5,step=1, max_step=3, name=f"Capacitor en el nodo 30")  #capacitor de 150 Kvar
-        self.action_dim=4      #Cantidad de pasos del banco de capacitores
+        # Add controllable shunt capacitor at bus 6
+        # max_step = 3 means steps 0, 1, 2, 3 are possible (4 discrete actions)
+        # q_mvar is the reactive power per step. -0.15 Mvar per step (capacitive)
+        pp.create_shunt(self.net, bus=6, q_mvar=-0.15, step=0, max_step=3, name="Controllable Capacitor at Bus 6")
 
         # Agregar líneas de distribución
         a=0
         b=1
-        pp.create_line_from_parameters(self.net, from_bus=b0, to_bus=b1, length_km=1, r_ohm_per_km=0.0922,x_ohm_per_km=0.0470, c_nf_per_km=a, max_i_ka=b)
+        #pp.create_line_from_parameters(self.net, from_bus=b0, to_bus=b1, length_km=1, r_ohm_per_km=0.0922,x_ohm_per_km=0.0470, c_nf_per_km=a, max_i_ka=b)
         pp.create_line_from_parameters(self.net, from_bus=b1, to_bus=b2, length_km=1, r_ohm_per_km=0.4930,x_ohm_per_km=0.2511, c_nf_per_km=a, max_i_ka=b)
         pp.create_line_from_parameters(self.net, from_bus=b2, to_bus=b3, length_km=1, r_ohm_per_km=0.3660,x_ohm_per_km=0.1864, c_nf_per_km=a, max_i_ka=b)
         pp.create_line_from_parameters(self.net, from_bus=b3, to_bus=b4, length_km=1, r_ohm_per_km=0.3811,x_ohm_per_km=0.1941, c_nf_per_km=a, max_i_ka=b)
@@ -173,18 +174,19 @@ class IEEE33BusSystem:
         pp.create_load(self.net, bus=b31, p_mw=self.base_loads[30][0], q_mvar=self.base_loads[30][1], name="Load 31")
         pp.create_load(self.net, bus=b32, p_mw=self.base_loads[31][0], q_mvar=self.base_loads[31][1], name="Load 32")
 
-#--------------Actualización de las cargas dependiendo de la demanda horaria
+#--------------Actualización de las cargas dependiendo de la demanda horaria-------------------------
     def update_loads(self, hora):
-        for j in range (hora):                                                        
-            for i, (p_base, q_base) in enumerate(self.base_loads):
-                   self.net.load.at[i, 'p_mw'] = p_base * self.porcentaje_demanda[j]
-                   self.net.load.at[i, 'q_mvar'] = q_base * self.porcentaje_demanda[j]
-        carga_hora=self.net.load
-        return carga_hora
+        """Updates loads based on the hourly demand factor."""
+        # 'hora' is 1-indexed (1 to 24), 'porcentaje_demanda' is 0-indexed (0 to 23)
+        demand_factor = self.porcentaje_demanda[hora - 1]
+        for i, (p_base, q_base) in enumerate(self.base_loads):
+            self.net.load.at[i, 'p_mw'] = p_base * demand_factor
+            self.net.load.at[i, 'q_mvar'] = q_base * demand_factor
+
 #--------------Resetear el sistema de distribucion con las cargas iniciales-------------------------
     def reset(self):
+        """Resets the network loads to base values and resets step count."""
         for i, (p_base, q_base) in enumerate(self.base_loads):
-            self.net.load.at[i, 'p_mw'] = p_base
             self.net.load.at[i, 'q_mvar'] = q_base
             carga0=self.net.load
         return carga0
@@ -193,22 +195,19 @@ class IEEE33BusSystem:
         # --- Penalización por Voltaje ---
         # Asegúrate de que res_bus no esté vacío y tenga 'vm_pu'
         if self.net.res_bus.empty or 'vm_pu' not in self.net.res_bus.columns:
-            print("Advertencia: res_bus vacío o sin 'vm_pu' al calcular recompensa.")
+            print("Warning: res_bus empty or missing 'vm_pu' when calculating reward.")
             penalizacion_voltaje = 1000 # Penalización alta si no hay resultados
         else:
-            voltajes = self.net.res_bus.vm_pu[[6]].values   #<----------aqui se modifica los nodos que se tienen en cuenta
-            # Penaliza desviaciones de 1.0 pu
-            penalizacion_voltaje = np.sum(1/((voltajes - 1.0)**2+0.5))             #<----------Penaliza cualquier desviacion de tensión 
-            # Opcional: Penalizar más fuerte si está fuera de límites (e.g., <0.95 o >1.05)
-            penalizacion_limites = np.sum((voltajes[voltajes < 0.95] - 0.95)**2) + \
-                                   np.sum((voltajes[voltajes > 1.05] - 1.05)**2)
-            #penalizacion_voltaje = 0
-            #penalizacion_voltaje += penalizacion_limites * 10 # Ponderar más fuerte
+            voltajes = self.net.res_bus.loc[self.TARGET_BUS_INDICES, 'vm_pu'].values
+            # Penalize voltages outside the [0.95, 1.05] pu range
+            penalizacion_voltaje = np.sum(np.maximum(0, 0.95 - voltajes)**2 +
+                                          np.maximum(0, voltajes - 1.05)**2)
+
         # Aquí mantenemos tu cálculo original (penaliza toda Q en buses)
         if self.net.res_bus.empty or 'q_mvar' not in self.net.res_bus.columns:
              penalizacion_reactiva = 1000 # Penalización alta
         else:
-            potencia_reactiva_buses = np.abs(self.net.res_bus.q_mvar[[6]].values)
+            potencia_reactiva_buses = np.abs(self.net.res_bus.loc[self.TARGET_BUS_INDICES, 'q_mvar'].values)
             penalizacion_reactiva = np.sum(potencia_reactiva_buses)
         # --- Penalización por Acción del Capacitor ---
         step_change = abs(current_step - previous_step)
@@ -216,10 +215,10 @@ class IEEE33BusSystem:
 
         w1 = 10.0   # Peso para desviación de voltaje
         w2 = 0.1    # Peso para potencia reactiva (reducido si el foco es voltaje)
-        w3 = 5.0    # Peso para cambio de step del capacitor (¡AJUSTAR PARA PENALIZACIÓN FUERTE!)
+        w3 = 5.0    # Peso para cambio de step del capacitor
 
         normalization_factor = 100 # Ajusta este factor según sea necesario
-        reward = (penalizacion_voltaje*10-(w1 * penalizacion_limites + w2 * penalizacion_reactiva + w3 * penalizacion_accion)) / normalization_factor
+        reward = -(w1 * penalizacion_voltaje + w2 * penalizacion_reactiva + w3 * penalizacion_accion) / normalization_factor
         return reward
 #--------------Definición de la acción del actor---------------------------------------------------   
     def step(self, action):
@@ -235,50 +234,46 @@ class IEEE33BusSystem:
         """
         # Asegurar que la acción es un entero
         action = int(action)
+        # Get max step for the controlled shunt
+        max_step = int(self.net.shunt.at[self.CONTROLLED_SHUNT_INDEX, 'max_step'])
+        # Clip action to be within the valid range [0, max_step]
+        action = np.clip(action, 0, max_step)
 
         # 1. Obtener el estado del capacitor ANTES de aplicar la acción
         try:
-            previous_step = int(self.net.shunt.at[self.controlled_shunt_idx, 'step'])
+            previous_step = int(self.net.shunt.at[self.CONTROLLED_SHUNT_INDEX, 'step'])
         except (KeyError, IndexError):
-            print(f"Error: No se pudo obtener el step previo del shunt {self.controlled_shunt_idx}.")
+            print(f"Error: Could not get previous step for shunt {self.CONTROLLED_SHUNT_INDEX}.") # Mantener esta línea
             previous_step = 0 # Asumir 0 si no se puede obtener
         except Exception as e:
              print(f"Error inesperado obteniendo previous_step: {e}")
-             previous_step = 0
+             # Eliminar el bloque if/else problemático que estaba aquí y causaba el IndentationError.
+             # La acción ya se valida con np.clip anteriormente.
+             # La aplicación de la acción se hace en el siguiente bloque try.
+             previous_step = 0 # Asumir 0 si hay un error inesperado al obtener el paso previo
 
-        # 2. Aplicar la acción (cambiar el step del capacitor)
+        # 2. Apply the action (change the capacitor step)
         try:
-            # Validar que la acción esté dentro de los límites permitidos
-            max_step = self.net.shunt.at[self.controlled_shunt_idx, 'max_step']
-            # La acción debe estar entre 0 y max_step (inclusive)
-            # El actor produce acciones de 0 a ACTION_DIM-1. Si ACTION_DIM = max_step + 1, está bien.
-            # Si no, necesitas mapear la salida del actor a los steps válidos.
-            # Asumiendo que action ya es el step deseado (0 a max_step)
-            if 0 <= action <= max_step:
-                 self.net.shunt.at[self.controlled_shunt_idx, 'step'] = action
-            else:
-                 print(f"Advertencia: Acción {action} fuera de rango [0, {max_step}]. No se aplicará cambio.")
-                 action = previous_step # Mantener el paso anterior si la acción es inválida
-
+            self.net.shunt.at[self.CONTROLLED_SHUNT_INDEX, 'step'] = action
         except (KeyError, IndexError):
-            print(f"Error: No se pudo aplicar la acción al shunt {self.controlled_shunt_idx}.")
-            action = previous_step # Mantener el paso anterior si hay error
-        except Exception as e:
-             print(f"Error inesperado aplicando acción: {e}")
-             action = previous_step
+             print(f"Error: Could not apply action {action} to shunt {self.CONTROLLED_SHUNT_INDEX}.")
+             # Si la aplicación de la acción falla, el estado del shunt no cambia.
+             # La recompensa se calculará con el estado real del shunt. No se reasigna 'action'.
+        except Exception as e: # Capturar otras posibles excepciones al aplicar la acción
+            print(f"Error inesperado aplicando acción {action} al shunt {self.CONTROLLED_SHUNT_INDEX}: {e}")
 
         # 3. Ejecutar el flujo de potencia
         try:
             pp.runpp(self.net, algorithm='nr', calculate_voltage_angles=True)
             converged = True
         except pp.LoadflowNotConverged as e:
-            print(f"Advertencia: Flujo de potencia no convergió en step {self.step_count}. Acción={action}. Error: {e}")
+            print(f"Warning: Power flow did not converge at step {self.step_count}. Action={action}. Error: {e}")
             converged = False
             # ¿Qué hacer si no converge?
             # Opción 1: Recompensa muy negativa
             # Opción 2: Devolver estado anterior (o de ceros) y recompensa negativa
             # Opción 3: Terminar el episodio (done=True)
-            # Aquí elegimos Opción 1 y 2:
+            # Returning zero state and negative reward
             reward = -10.0 # Recompensa muy negativa
             next_state = self.get_state() # Intentar obtener estado (puede ser de ceros si get_state lo maneja)
             done = self.is_done() # Comprobar si se alcanzó el límite de pasos
@@ -286,24 +281,22 @@ class IEEE33BusSystem:
             return next_state, reward, done
         except Exception as e:
             print(f"Error inesperado en pp.runpp: {e}")
-            # Manejar otros errores de flujo de potencia
+            # Handle other power flow errors
             reward = -10.0
             next_state = self.get_state()
             done = self.is_done()
             self.step_count += 1
             return next_state, reward, done
 
-
         # 4. Obtener el siguiente estado
-        next_state = self.get_state() # get_state ya ejecuta pp.runpp, ¿redundante?
-                                      # -> Sí, get_state vuelve a ejecutar runpp. Optimizar:
-                                      #    Modificar get_state para que NO ejecute runpp si ya se hizo.
-                                      #    O, quitar el runpp de get_state y asegurarse que se llama en step.
-                                      #    Por ahora, dejamos la redundancia para mantener get_state autocontenido.
+        # Note: get_state does NOT run pp.runpp, it just reads results.
+        # pp.runpp was already called above.
+        next_state = self.get_state()
+
 
         # 5. Calcular la recompensa usando el step anterior y el actual (acción)
         # Asegurarse de que 'action' es el paso que realmente se aplicó
-        current_step_applied = int(self.net.shunt.at[self.controlled_shunt_idx, 'step'])
+        current_step_applied = int(self.net.shunt.at[self.CONTROLLED_SHUNT_INDEX, 'step'])
         reward = self.calculate_reward(previous_step, current_step_applied)
 
         # 6. Incrementar contador y verificar si el episodio terminó
@@ -312,77 +305,67 @@ class IEEE33BusSystem:
 
         return next_state, reward, done
 #-----------Obtención del estado del sistema-------------------------------------------------------------- 
-    def get_state(self):               # obtener el estado actual del sistema 
-        NEW_STATE_DIM = 4
-        try:
-            # Ensure power flow is run to have results
-            pp.runpp(self.net, algorithm='nr', calculate_voltage_angles=True) # Use Newton-Raphson for better convergence sometimes
-        except pp.LoadflowNotConverged as e:
-            print(f"Error: El flujo de potencia no convergió: {e}")
-            print("Advertencia: Retornando estado cero debido a no convergencia.")
-            return np.zeros(NEW_STATE_DIM, dtype=np.float32) 
-        except Exception as e:
-            print(f"Error inesperado al ejecutar el flujo de potencia: {e}")
-            raise # Re-raise other unexpected errors
-
-        # Indices of interest
-        bus_indices = [6] # Define once for clarity and consistency
-
-        # Check if results are available
+    def get_state(self):
+        """
+        Gets the current state of the system.
+        Assumes pp.runpp has been called just before this method.
+        State includes voltage, active power, reactive power at target buses,
+        and the current capacitor step.
+        """
+        # Check if results are available after runpp (called in step)
         if self.net.res_bus.empty:
-             print("Error: La tabla res_bus está vacía después del flujo de potencia.")
-             # Handle this case, maybe return default state or raise error
-             print("Advertencia: Retornando estado cero debido a res_bus vacío.")
-             return np.zeros(NEW_STATE_DIM, dtype=np.float32)
-
+             print("Error: res_bus table is empty. Power flow might not have run or converged.")
+             print(f"Warning: Returning zero state ({self.STATE_DIM}) due to empty res_bus.")
+             return np.zeros(self.STATE_DIM, dtype=np.float32)
+             
         # --- Corrected data extraction using .loc ---
         # Using .loc on the DataFrame is generally robust
         try:
-            voltaje = self.net.res_bus.loc[bus_indices, 'vm_pu'].values
-            active_power = self.net.res_bus.loc[bus_indices, 'p_mw'].values
-            reactive_power = self.net.res_bus.loc[bus_indices, 'q_mvar'].values # Corrected line using .loc
+            voltaje = self.net.res_bus.loc[self.TARGET_BUS_INDICES, 'vm_pu'].values
+            active_power = self.net.res_bus.loc[self.TARGET_BUS_INDICES, 'p_mw'].values
+            reactive_power = self.net.res_bus.loc[self.TARGET_BUS_INDICES, 'q_mvar'].values
         except KeyError as e:
-            print(f"Error: Uno de los índices de bus {bus_indices} no encontrado en res_bus. Índices disponibles: {self.net.res_bus.index.tolist()}. Error: {e}")
-            print("Advertencia: Retornando estado cero debido a KeyError.")
-            return np.zeros(NEW_STATE_DIM, dtype=np.float32)
+            print(f"Error: One of the target bus indices {self.TARGET_BUS_INDICES} not found in res_bus. Available indices: {self.net.res_bus.index.tolist()}. Error: {e}")
+            print(f"Warning: Returning zero state ({self.STATE_DIM}) due to KeyError.")
+            return np.zeros(self.STATE_DIM, dtype=np.float32)
         except Exception as e:
-            print(f"Error inesperado al extraer datos de res_bus: {e}")
+            print(f"Unexpected error extracting data from res_bus: {e}")
             raise
 
         # --- Concatenate into a single state vector ---
-        # Ensure all parts have the expected length (5 in this case)
+        # Ensure all parts have the expected length (1 for each target bus metric + 1 for capacitor step)
+        # Assuming TARGET_BUS_INDICES has length 1
+        if not (len(voltaje) == len(self.TARGET_BUS_INDICES) and
+                len(active_power) == len(self.TARGET_BUS_INDICES) and
+                len(reactive_power) == len(self.TARGET_BUS_INDICES)):
+             print(f"Error: Unexpected length of extracted vectors. V:{len(voltaje)}, P:{len(active_power)}, Q:{len(reactive_power)}. Expected: {len(self.TARGET_BUS_INDICES)}")
+             print(f"Warning: Returning zero state ({self.STATE_DIM}) due to incorrect vector length.")
+             return np.zeros(self.STATE_DIM, dtype=np.float32)
+
         try:
-            # Asumiendo que el capacitor es el shunt en el índice 0
-            # Si tienes múltiples shunts y quieres uno específico, ajusta el índice
-            capacitor_step = self.net.shunt.at[0, 'step']
+            capacitor_step = self.net.shunt.at[self.CONTROLLED_SHUNT_INDEX, 'step']
             # Convertir a un array numpy para concatenación
             capacitor_step_array = np.array([capacitor_step], dtype=np.float32)
         except IndexError:
             print("Error: No se encontró el shunt (capacitor) en el índice 0.")
-            print(f"Advertencia: Retornando estado cero ({NEW_STATE_DIM}) debido a falta de shunt.")
-            return np.zeros(NEW_STATE_DIM, dtype=np.float32) # Usar nueva dimensión
+            print(f"Warning: Returning zero state ({self.STATE_DIM}) due to missing shunt.")
+            return np.zeros(self.STATE_DIM, dtype=np.float32)
         except KeyError:
              print("Error: La columna 'step' no existe en el DataFrame de shunts.")
-             print(f"Advertencia: Retornando estado cero ({NEW_STATE_DIM}) debido a falta de columna 'step'.")
-             return np.zeros(NEW_STATE_DIM, dtype=np.float32) # Usar nueva dimensión
+             print(f"Warning: Returning zero state ({self.STATE_DIM}) due to missing 'step' column.")
+             return np.zeros(self.STATE_DIM, dtype=np.float32)
         except Exception as e:
             print(f"Error inesperado al obtener el estado del capacitor: {e}")
             raise
 
-        if not (len(voltaje) == 1 and len(active_power) == 1 and len(reactive_power) == 1):
-             print(f"Error: Longitud inesperada de los vectores extraídos. V:{len(voltaje)}, P:{len(active_power)}, Q:{len(reactive_power)}")
-             print("Advertencia: Retornando estado cero debido a longitud incorrecta.")
-             return np.zeros(NEW_STATE_DIM, dtype=np.float32)
         state = np.concatenate((voltaje, active_power, reactive_power, capacitor_step_array), axis=0) # Concatenate along axis 0
         # Ensure the final state has the correct dimension
-        if state.shape[0] != NEW_STATE_DIM: # Check against STATE_DIM
-             print(f"Error: La dimensión del estado final ({state.shape[0]}) no coincide con STATE_DIM (15).")
+        if state.shape[0] != self.STATE_DIM:
+             print(f"Error: Final state dimension ({state.shape[0]}) does not match self.STATE_DIM ({self.STATE_DIM}).")
              # This shouldn't happen if concatenation is correct, but good sanity check
-             print("Advertencia: Retornando estado cero debido a dimensión final incorrecta.")
-             return np.zeros(NEW_STATE_DIM, dtype=np.float32)
-        # Convert state elements to float32 for consistency with PyTorch tensors
-        #state = state.astype(np.float32)
-        return state # Return a single NumPy array of shape (15,)
+             print(f"Warning: Returning zero state ({self.STATE_DIM}) due to incorrect final dimension.")
+             return np.zeros(self.STATE_DIM, dtype=np.float32)
+        return state.astype(np.float32) # Return a single NumPy array of shape (STATE_DIM,)
     
     def variables_interes(self):
         #Vnodo=self.net.res_bus.vm_pu.at[7]
@@ -391,5 +374,3 @@ class IEEE33BusSystem:
         #Qnodos=self.net.res_bus["q_mvar"]
         #Qcapacitor=self.net.res_shunt["q_mvar"]
         Pnodos=self.net.res_bus["p_mw"]
-
-        return Pnodos
